@@ -15,8 +15,8 @@ library(spdep)
 library(magrittr)
 
 #Read Needed Datasets
-Squirrel_Cort<-read.csv("/Users/alexanderhare/Desktop/PhD/Bioacoustics Analysis/Social Effects of Cortisol/Analyses/Social_Cort_Data.csv")
-Grids_Density<-read.csv("/Users/alexanderhare/Desktop/PhD/Bioacoustics Analysis/Social Effects of Cortisol/Analyses/grids_density_select.csv")
+Squirrel_Cort<-read.csv("path/Social_Cort_Data.csv")
+Grids_Density<-read.csv("path/grids_density_select.csv")
 ```
 
 
@@ -801,7 +801,7 @@ FCM.plot
 
 
 ggsave(
-  "/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/Nbr_FCMs_08SEP2024.jpg",
+  "/path/Nbr_FCMs_08SEP2024.jpg",
   FCM.plot,
   width = 28,
   height = 21,
@@ -814,7 +814,7 @@ library(visreg)
 #Local density model
 
 # 1. Open jpeg file
-jpeg("/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/density_residual_plot_11July2025.jpg", width = 700, height = 500)
+jpeg("/path/density_residual_plot_11July2025.jpg", width = 700, height = 500)
 # 2. Create the plot
 par(cex.lab = 1.8, cex.axis = 1.5, mar=c(5,6,4,1)+.1)
 visreg(neighbourhood.model,
@@ -834,7 +834,7 @@ dev.off()
 
 
 #Full model with neighbour FCM
-jpeg("/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/neighbour_residual_plot_11July2025.jpg", width = 600, height = 500)
+jpeg("/path/neighbour_residual_plot_11July2025.jpg", width = 600, height = 500)
 # 2. Create the plot
 par(cex.lab = 1.8, cex.axis = 1.5, mar=c(5,6,4,1)+.1)
 visreg(neighbourhood.model,
@@ -886,7 +886,7 @@ repro.violin
 
 #Figure Save
 ggsave(
-  "/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/Repro_Violin_08SEP2024.jpg",
+  "/path/Repro_Violin_08SEP2024.jpg",
   repro.violin,
   width = 34,
   height = 19,
