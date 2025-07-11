@@ -1,0 +1,1363 @@
+---
+title: "Red Squirrel Social Cortisol"
+output: html_notebook
+---
+
+#Package and Data Load
+```{r}
+#Packages
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(lme4)
+library(sp)
+library(spdep)
+library(magrittr)
+
+#Read Needed Datasets
+Squirrel_Cort<-read.csv("/Users/alexanderhare/Desktop/PhD/Bioacoustics Analysis/Social Effects of Cortisol/Analyses/Social_Cort_Data.csv")
+Grids_Density<-read.csv("/Users/alexanderhare/Desktop/PhD/Bioacoustics Analysis/Social Effects of Cortisol/Analyses/grids_density_select.csv")
+```
+
+
+#Manuscript Analysis
+##Data Setup
+###Years Post Mass
+```{r}
+Squirrel_Cort$years_post_mast<-dplyr::recode_factor(Squirrel_Cort$year,"2008" = "mast+3", "2009" = "mast+4", "2010" = "mast", "2011" = "mast+1")
+
+Squirrel_Cort$years_post_mast <- factor(Squirrel_Cort$years_post_mast, levels=c('mast', 'mast+1', 'mast+3', 'mast+4'))
+
+#Create new variable for squirrel_id + date and create upper and lower date ranges
+Squirrel_Cort %<>% 
+  unite(squirrel_date, squirrel_id, trap_date, sep = "_", remove = FALSE) %>%
+  mutate(trap_date = as.Date(trap_date)) %>%
+  mutate(date_upper = trap_date + 7) %>%
+  mutate(date_lower = trap_date - 7)
+
+n_distinct(Squirrel_Cort$squirrel_date) #920
+
+
+#Duplicate squirrel_date combinations, so average across each one (initial look indicates they are quite close in ln ng/g)
+Squirrel_Cort_avg<-Squirrel_Cort %>%
+  group_by(squirrel_date) %>%
+  dplyr::mutate(ng_g_avg = mean(ng_g_ln, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_date, .keep_all= TRUE) %>%
+  mutate(part_julian = yday(fieldBDate)) %>% #these two lines generate julian dates for female parturition dates and replace NAs with "0" for use in spatial analyses
+  mutate(part_julian = replace_na(part_julian, 0))
+```
+
+
+###Neighbourhood FCMs
+####Separate by grid & year
+```{r}
+KL_2008<-dplyr::filter(Squirrel_Cort_avg, grid == "KL" & year == 2008)
+KL_2009<-dplyr::filter(Squirrel_Cort_avg, grid == "KL" & year == 2009)
+KL_2010<-dplyr::filter(Squirrel_Cort_avg, grid == "KL" & year == 2010)
+KL_2011<-dplyr::filter(Squirrel_Cort_avg, grid == "KL" & year == 2011)
+
+
+SU_2008<-dplyr::filter(Squirrel_Cort_avg, grid == "SU" & year == 2008)
+SU_2009<-dplyr::filter(Squirrel_Cort_avg, grid == "SU" & year == 2009)
+SU_2010<-dplyr::filter(Squirrel_Cort_avg, grid == "SU" & year == 2010)
+SU_2011<-dplyr::filter(Squirrel_Cort_avg, grid == "SU" & year == 2011)
+```
+
+
+####KL_2008 Calculate Average Neighbour FCMs
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/KluaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+KL_2008_dup<-KL_2008
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.KL.2008 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(KL_2008$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+library(magrittr)
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(KL_2008_dup,  (30*KL_2008$locx.census[j]-30*KL_2008_dup$locx.census)^2+(30*KL_2008$locy.census[j]-30*KL_2008_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' KL_2008_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- KL_2008$squirrel_date[j]
+	neighbours$Focal.locX <- KL_2008$locx.census[j]
+	neighbours$Focal.locY <- KL_2008$locy.census[j]
+	neighbours$Focal.reflo <- KL_2008$reflo[j]
+	neighbours$Focal.Sex <- KL_2008$sex[j]
+	neighbours$Focal.Date <- KL_2008$trap_date[j]
+	neighbours$Focal.FCM <- KL_2008$ng_g_avg[j]
+	neighbours$Focal.year <- KL_2008$year[j]
+	neighbours$Focal.squirrel_id <- KL_2008$squirrel_id[j]
+	neighbours$Focal.wgt <- KL_2008$wgt[j]
+	neighbours$Focal.grid <- KL_2008$grid[j]
+	neighbours$Focal.rep_con <- KL_2008$rep_con[j]
+	neighbours$Focal.years_post_mast <- KL_2008$years_post_mast[j]
+	neighbours$Focal.local.density <- KL_2008$local.density[j]
+	neighbours$Focal.part <-KL_2008$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the KL_2008_dup where two squirrels were assigned the same primary KL_2008den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T))
+	  
+	neighbours %<>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.KL.2008 <- rbind(neighbours.KL.2008,neighbours)
+}
+
+
+#The neighbours.all KL_2008_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the KL_2008_dupframe:
+
+neighbourhoods.KL2008 <- neighbours.KL.2008 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+KL_2008_Neighbourhood <- neighbourhoods.KL2008 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+####KL_2009
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/KluaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+KL_2009_dup<-KL_2009
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.KL.2009 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(KL_2009$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(KL_2009_dup,  (30*KL_2009$locx.census[j]-30*KL_2009_dup$locx.census)^2+(30*KL_2009$locy.census[j]-30*KL_2009_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' KL_2009_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- KL_2009$squirrel_date[j]
+	neighbours$Focal.locX <- KL_2009$locx.census[j]
+	neighbours$Focal.locY <- KL_2009$locy.census[j]
+	neighbours$Focal.reflo <- KL_2009$reflo[j]
+	neighbours$Focal.Sex <- KL_2009$sex[j]
+	neighbours$Focal.Date <- KL_2009$trap_date[j]
+	neighbours$Focal.FCM <- KL_2009$ng_g_avg[j]
+	neighbours$Focal.year <- KL_2009$year[j]
+	neighbours$Focal.squirrel_id <- KL_2009$squirrel_id[j]
+	neighbours$Focal.wgt <- KL_2009$wgt[j]
+	neighbours$Focal.grid <- KL_2009$grid[j]
+	neighbours$Focal.rep_con <- KL_2009$rep_con[j]
+	neighbours$Focal.years_post_mast <- KL_2009$years_post_mast[j]
+	neighbours$Focal.local.density <- KL_2009$local.density[j]
+	neighbours$Focal.part <-KL_2009$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the KL_2009_dup base where two squirrels were assigned the same primary KL_2009den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T)) %>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.KL.2009 <- rbind(neighbours.KL.2009,neighbours)
+}
+
+
+#The neighbours.all KL_2009_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the KL_2009_dupframe:
+
+neighbourhoods.KL2009 <- neighbours.KL.2009 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+KL_2009_Neighbourhood <- neighbourhoods.KL2009 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+####KL_2010
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/KluaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+KL_2010_dup<-KL_2010
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.KL.2010 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(KL_2010$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(KL_2010_dup,  (30*KL_2010$locx.census[j]-30*KL_2010_dup$locx.census)^2+(30*KL_2010$locy.census[j]-30*KL_2010_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' KL_2010_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- KL_2010$squirrel_date[j]
+	neighbours$Focal.locX <- KL_2010$locx.census[j]
+	neighbours$Focal.locY <- KL_2010$locy.census[j]
+	neighbours$Focal.reflo <- KL_2010$reflo[j]
+	neighbours$Focal.Sex <- KL_2010$sex[j]
+	neighbours$Focal.Date <- KL_2010$trap_date[j]
+	neighbours$Focal.FCM <- KL_2010$ng_g_avg[j]
+	neighbours$Focal.year <- KL_2010$year[j]
+	neighbours$Focal.squirrel_id <- KL_2010$squirrel_id[j]
+	neighbours$Focal.wgt <- KL_2010$wgt[j]
+	neighbours$Focal.grid <- KL_2010$grid[j]
+	neighbours$Focal.rep_con <- KL_2010$rep_con[j]
+	neighbours$Focal.years_post_mast <- KL_2010$years_post_mast[j]
+	neighbours$Focal.local.density <- KL_2010$local.density[j]
+	neighbours$Focal.part <-KL_2010$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the KL_2010_dup base where two squirrels were assigned the same primary KL_2010den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T)) %>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.KL.2010 <- rbind(neighbours.KL.2010,neighbours)
+}
+
+
+#The neighbours.all KL_2010_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the KL_2010_dupframe:
+
+neighbourhoods.KL2010 <- neighbours.KL.2010 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+KL_2010_Neighbourhood <- neighbourhoods.KL2010 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+
+####KL_2011
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/KluaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+KL_2011_dup<-KL_2011
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.KL.2011 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(KL_2011$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(KL_2011_dup,  (30*KL_2011$locx.census[j]-30*KL_2011_dup$locx.census)^2+(30*KL_2011$locy.census[j]-30*KL_2011_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' KL_2011_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- KL_2011$squirrel_date[j]
+	neighbours$Focal.locX <- KL_2011$locx.census[j]
+	neighbours$Focal.locY <- KL_2011$locy.census[j]
+	neighbours$Focal.reflo <- KL_2011$reflo[j]
+	neighbours$Focal.Sex <- KL_2011$sex[j]
+	neighbours$Focal.Date <- KL_2011$trap_date[j]
+	neighbours$Focal.FCM <- KL_2011$ng_g_avg[j]
+	neighbours$Focal.year <- KL_2011$year[j]
+	neighbours$Focal.squirrel_id <- KL_2011$squirrel_id[j]
+	neighbours$Focal.wgt <- KL_2011$wgt[j]
+	neighbours$Focal.grid <- KL_2011$grid[j]
+	neighbours$Focal.rep_con <- KL_2011$rep_con[j]
+	neighbours$Focal.years_post_mast <- KL_2011$years_post_mast[j]
+	neighbours$Focal.local.density <- KL_2011$local.density[j]
+	neighbours$Focal.part <-KL_2011$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the KL_2011_dup base where two squirrels were assigned the same primary KL_2011den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T)) %>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.KL.2011 <- rbind(neighbours.KL.2011,neighbours)
+}
+
+
+#The neighbours.all KL_2011_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the KL_2011_dupframe:
+
+neighbourhoods.KL2011 <- neighbours.KL.2011 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+KL_2011_Neighbourhood <- neighbourhoods.KL2011 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+
+####SU_2008
+```{r} 
+#Squirrel_id = 8593 has no neighbours within 150m, causing the neighbourhood loop to crash, so dropping from analysis
+SU_2008 <- SU_2008 %>%
+  filter(!c(squirrel_id == "8593"))
+
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/KluaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+SU_2008_dup<-SU_2008
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.SU.2008 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(SU_2008$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(SU_2008_dup,  (30*SU_2008$locx.census[j]-30*SU_2008_dup$locx.census)^2+(30*SU_2008$locy.census[j]-30*SU_2008_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' SU_2008_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- SU_2008$squirrel_date[j]
+	neighbours$Focal.locX <- SU_2008$locx.census[j]
+	neighbours$Focal.locY <- SU_2008$locy.census[j]
+	neighbours$Focal.reflo <- SU_2008$reflo[j]
+	neighbours$Focal.Sex <- SU_2008$sex[j]
+	neighbours$Focal.Date <- SU_2008$trap_date[j]
+	neighbours$Focal.FCM <- SU_2008$ng_g_avg[j]
+	neighbours$Focal.year <- SU_2008$year[j]
+	neighbours$Focal.squirrel_id <- SU_2008$squirrel_id[j]
+	neighbours$Focal.wgt <- SU_2008$wgt[j]
+	neighbours$Focal.grid <- SU_2008$grid[j]
+	neighbours$Focal.rep_con <- SU_2008$rep_con[j]
+	neighbours$Focal.years_post_mast <- SU_2008$years_post_mast[j]
+	neighbours$Focal.local.density <- SU_2008$local.density[j]
+	neighbours$Focal.part <-SU_2008$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the SU_2008_dup base where two squirrels were assigned the same primary SU_2008den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T)) %>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.SU.2008 <- rbind(neighbours.SU.2008,neighbours)
+}
+
+
+#The neighbours.all SU_2008_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the SU_2008_dupframe:
+
+neighbourhoods.SU2008 <- neighbours.SU.2008 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+SU_2008_Neighbourhood <- neighbourhoods.SU2008 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+####SU_2009
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/KluaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+SU_2009_dup<-SU_2009
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.SU.2009 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(SU_2009$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(SU_2009_dup,  (30*SU_2009$locx.census[j]-30*SU_2009_dup$locx.census)^2+(30*SU_2009$locy.census[j]-30*SU_2009_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' SU_2009_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- SU_2009$squirrel_date[j]
+	neighbours$Focal.locX <- SU_2009$locx.census[j]
+	neighbours$Focal.locY <- SU_2009$locy.census[j]
+	neighbours$Focal.reflo <- SU_2009$reflo[j]
+	neighbours$Focal.Sex <- SU_2009$sex[j]
+	neighbours$Focal.Date <- SU_2009$trap_date[j]
+	neighbours$Focal.FCM <- SU_2009$ng_g_avg[j]
+	neighbours$Focal.year <- SU_2009$year[j]
+	neighbours$Focal.squirrel_id <- SU_2009$squirrel_id[j]
+	neighbours$Focal.wgt <- SU_2009$wgt[j]
+	neighbours$Focal.grid <- SU_2009$grid[j]
+	neighbours$Focal.rep_con <- SU_2009$rep_con[j]
+	neighbours$Focal.years_post_mast <- SU_2009$years_post_mast[j]
+	neighbours$Focal.local.density <- SU_2009$local.density[j]
+	neighbours$Focal.part <-SU_2009$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the SU_2009_dup base where two squirrels were assigned the same primary SU_2009den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T)) %>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.SU.2009 <- rbind(neighbours.SU.2009,neighbours)
+}
+
+
+#The neighbours.all SU_2009_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the SU_2009_dupframe:
+
+neighbourhoods.SU2009 <- neighbours.SU.2009 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+SU_2009_Neighbourhood <- neighbourhoods.SU2009 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+
+####SU_2010
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/SUuaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+SU_2010_dup<-SU_2010
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.SU.2010 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(SU_2010$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(SU_2010_dup,  (30*SU_2010$locx.census[j]-30*SU_2010_dup$locx.census)^2+(30*SU_2010$locy.census[j]-30*SU_2010_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' SU_2010_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- SU_2010$squirrel_date[j]
+	neighbours$Focal.locX <- SU_2010$locx.census[j]
+	neighbours$Focal.locY <- SU_2010$locy.census[j]
+	neighbours$Focal.reflo <- SU_2010$reflo[j]
+	neighbours$Focal.Sex <- SU_2010$sex[j]
+	neighbours$Focal.Date <- SU_2010$trap_date[j]
+	neighbours$Focal.FCM <- SU_2010$ng_g_avg[j]
+	neighbours$Focal.year <- SU_2010$year[j]
+	neighbours$Focal.squirrel_id <- SU_2010$squirrel_id[j]
+	neighbours$Focal.wgt <- SU_2010$wgt[j]
+	neighbours$Focal.grid <- SU_2010$grid[j]
+	neighbours$Focal.rep_con <- SU_2010$rep_con[j]
+	neighbours$Focal.years_post_mast <- SU_2010$years_post_mast[j]
+	neighbours$Focal.local.density <- SU_2010$local.density[j]
+	neighbours$Focal.part <-SU_2010$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the SU_2010_dup base where two squirrels were assigned the same primary SU_2010den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T)) %>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.SU.2010 <- rbind(neighbours.SU.2010,neighbours)
+}
+
+
+#The neighbours.all SU_2010_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the SU_2010_dupframe:
+
+neighbourhoods.SU2010 <- neighbours.SU.2010 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+SU_2010_Neighbourhood <- neighbourhoods.SU2010 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+
+
+####SU_2011
+```{r} 
+#Modified from E. Siracusa's Neighbourhood Familiarity Script (https://github.com/SUuaneRedSquirrelProject/Example-analyses/blob/master/generate_social_neighbourhoods.R)
+#Make duplicate dataframe for referencing
+SU_2011_dup<-SU_2011
+
+#Calculating Neighbourhoods
+distance <- 150 #establish your radius for collecting neighbourhood data
+neighbours.SU.2011 <- data.frame() #create an empty data frame to store the iterations of your loop in
+
+n <- length(SU_2011$squirrel_date) #This is the length of your data (i.e. the squirrels that you want to create neighbourhoods and calculate density for). You can substitute squirrel_id for any column. This is the data the code below will loop through.
+
+for (j in 1:n) {
+	print(j)
+	#this selects neighbours in the same grid, year, month and within 150 m of your focal individual.
+	neighbours <- subset(SU_2011_dup,  (30*SU_2011$locx.census[j]-30*SU_2011_dup$locx.census)^2+(30*SU_2011$locy.census[j]-30*SU_2011_dup$locy.census)^2<=(distance)^2)
+	#this creates new columns in your 'neighbours' SU_2011_dup frame so that you can identify which focal individual you just created a neighbourhood for and adds back some of the information about the focal individual
+	neighbours$Focal.ID <- SU_2011$squirrel_date[j]
+	neighbours$Focal.locX <- SU_2011$locx.census[j]
+	neighbours$Focal.locY <- SU_2011$locy.census[j]
+	neighbours$Focal.reflo <- SU_2011$reflo[j]
+	neighbours$Focal.Sex <- SU_2011$sex[j]
+	neighbours$Focal.Date <- SU_2011$trap_date[j]
+	neighbours$Focal.FCM <- SU_2011$ng_g_avg[j]
+	neighbours$Focal.year <- SU_2011$year[j]
+	neighbours$Focal.squirrel_id <- SU_2011$squirrel_id[j]
+	neighbours$Focal.wgt <- SU_2011$wgt[j]
+	neighbours$Focal.grid <- SU_2011$grid[j]
+	neighbours$Focal.rep_con <- SU_2011$rep_con[j]
+	neighbours$Focal.years_post_mast <- SU_2011$years_post_mast[j]
+	neighbours$Focal.local.density <- SU_2011$local.density[j]
+	neighbours$Focal.part <-SU_2011$part_julian[j]
+	#this makes sure your focal squirrel is not included in your neighbours.
+	neighbours <- subset(neighbours, !neighbours$Focal.ID==neighbours$squirrel_date)
+	
+#Calculate Distance			
+	n <- length(neighbours$Focal.ID)
+	for(i in 1:n){
+		dis <- sqrt((30*(neighbours$Focal.locX[i])-30*(neighbours$locx.census[i]))^2+(30*(neighbours$Focal.locY[i])-30*(neighbours$locy.census[i]))^2)
+		neighbours[i,"Nbor.dis"] <- dis
+	}	
+ 
+#this serves as a double check and helps catch any mistakes in the SU_2011_dup base where two squirrels were assigned the same primary SU_2011den	and filters out neighbours that weren't sampled within a week
+	neighbours %<>% filter(Nbor.dis > 0,
+	                       date_upper>=Focal.Date,
+	                       date_lower<=Focal.Date) #Resolved --> September 3rd, 2024
+	
+#Calculate averages for the neighbourhood	
+	neighbours %<>% 
+		mutate(Nbr_ng_g_ln = mean(ng_g_avg, na.rm=T))%>%
+	  mutate(Nbr_part = mean(part_julian, na.rm=T))
+	
+#Put it all together 
+	neighbours.SU.2011 <- rbind(neighbours.SU.2011,neighbours)
+}
+
+
+#The neighbours.all SU_2011_dupframe has a row for each neighbour. If you are only interested in having a single row per neighbourhood you can condense the SU_2011_dupframe:
+
+neighbourhoods.SU2011 <- neighbours.SU.2011 %>%
+  add_count(Focal.ID, name = "Focal.Neighbours") %>% #This line counts the number of repeated unique Focal.IDs to track the number of neighbours that FCMs are being averaged over
+	mutate(DateIDRef = paste(Focal.Date,Focal.ID,Focal.reflo, sep = " ")) %>%
+	filter(!duplicated(DateIDRef))
+
+#Select only necessary rows for further analysis
+SU_2011_Neighbourhood <- neighbourhoods.SU2011 %>%
+  dplyr::select(starts_with("Focal"),
+                starts_with("Nbr"))
+
+```
+
+####Merge
+```{r}
+#Merge grid-years back together
+Squirrel_FCM<- rbind(KL_2008_Neighbourhood, 
+                     KL_2009_Neighbourhood, 
+                     KL_2010_Neighbourhood,
+                     KL_2011_Neighbourhood,
+                     SU_2008_Neighbourhood,
+                     SU_2009_Neighbourhood,
+                     SU_2010_Neighbourhood,
+                     SU_2011_Neighbourhood)
+
+str(Squirrel_FCM)
+
+Squirrel_FCM<- Squirrel_FCM %>%
+  mutate(Focal.ID = factor(Focal.ID),
+         reflo = factor(Focal.reflo),
+         sex = factor(Focal.Sex),
+         date = Focal.Date,
+         year = as.numeric(Focal.year),
+         squirrel_id = as.factor(Focal.squirrel_id),
+         wgt = Focal.wgt,
+         grid = as.factor(Focal.grid),
+         rep_con = as.factor(Focal.rep_con),
+         years_post_mast = Focal.years_post_mast,
+         local.density = Focal.local.density,
+         n_neighbours = Focal.Neighbours,
+         part_date = Focal.part,
+         .keep = "unused")
+
+str(Squirrel_FCM)
+n_distinct(Squirrel_FCM$squirrel_id)
+```
+
+#Analysis
+##LMER
+```{r}
+library(lme4)
+library(lmerTest)
+n_distinct(Squirrel_FCM$squirrel_id)
+#669 observations from 129 squirrels
+
+
+##Clean up NAs
+Squirrel_FCM<- Squirrel_FCM %>%
+  filter(Nbr_ng_g_ln != "NaN")
+
+n_distinct(Squirrel_FCM$squirrel_id)
+#669 observations from 129 squirrels --> no change
+
+
+#Build model -> initial model with interaction was non-significant, so removed from analysis
+neighbourhood.model<-lmerTest::lmer(Focal.FCM ~scale(Nbr_ng_g_ln)
+                                    + scale(local.density)
+                                    + rep_con
+                                    + (1|year:squirrel_id),
+                                    data=Squirrel_FCM)
+summary(neighbourhood.model) #Nbr FCMs estimate = 0.13424 (quite a bit higher than local density in the stripped down model)
+anova(neighbourhood.model)
+#significant independent effect of neighbour FCMs
+#No effect of local density
+#significant effect of reproductive condition
+
+confint(neighbourhood.model)
+#Same story with confidence intervals
+
+
+#Check assumptions
+plot(neighbourhood.model) #Variance looks great!
+qqnorm(resid(neighbourhood.model))
+qqline(resid(neighbourhood.model)) #Residuals show a little tailedness, but really arent that bad --> go ahead with model to see if Ben's findings are supported
+
+#checking for autocorrelation
+car::vif(neighbourhood.model) #Not seeing any, looks good
+
+#Add residuals to dataframe for plots
+res_nbr <- resid(neighbourhood.model)
+Squirrel_FCM$RESID<-res_nbr
+
+#With interaction
+neighbourhood.model.int<-lmerTest::lmer(Focal.FCM ~scale(Nbr_ng_g_ln)*scale(local.density)
+                                        + rep_con
+                                        + (1|year:squirrel_id),
+                                        data=Squirrel_FCM)
+summary(neighbourhood.model.int)
+
+
+
+#Without Neighbour FCMs
+neighbourhood.model.minus<-lmerTest::lmer(Focal.FCM ~scale(local.density)
+                                    + rep_con
+                                    + (1|year:squirrel_id),
+                                    data=Squirrel_FCM)
+summary(neighbourhood.model.minus) #local.density estimate = 0.09719
+anova(neighbourhood.model.minus)
+
+```
+
+###Model Comparison --> FCM vs local density
+```{r}
+library(AICcmodavg)
+
+#Create null model
+null.model<-lmerTest::lmer(Focal.FCM ~ (1|year:squirrel_id),
+                                    data=Squirrel_FCM)
+
+#Create FCM only model
+FCM.model<-lmerTest::lmer(Focal.FCM ~ scale(Nbr_ng_g_ln) + (1|year:squirrel_id),
+                          data=Squirrel_FCM)
+
+models <- list(null.model,
+               neighbourhood.model.minus,
+               #FCM.model, #removed to streamline discussion and make direct comparisons between previous personal information model vs eavesdropping model
+               neighbourhood.model)
+
+model.names <- c('null.model',
+                 'density.model',
+                 #'FCM.model',
+                 'full.model')
+
+aictab(cand.set = models, modnames = model.names)
+#Full model including [FCM] is a better model. Use this model for subsequent post-hoc analyses
+```
+
+
+##Post-hoc
+###Neighbour FCMs
+```{r}
+#examine raw relationship
+FCM.plot<-ggplot(Squirrel_FCM,
+                          aes(Nbr_ng_g_ln,
+                              Focal.FCM)) +
+  geom_point(position = "jitter", fill = "#E69F00", color = "black", shape =21, size = 4) +
+  theme_classic() +
+  ylab("Individual [FCM] (ln ng/g)")  +
+  xlab("Mean Neighbourhood [FCM] (ln ng/g)")+
+  geom_smooth(aes(x = Nbr_ng_g_ln,
+                  y = Focal.FCM),
+              formula = y ~ x,
+              method = lm, color = "black") +
+  theme(legend.position = "none",
+        axis.title.x = element_text(size=20),
+        axis.text.x  = element_text(size=16),
+        axis.title.y = element_text(size=20),
+        axis.text.y = element_text(size=16))
+  
+FCM.plot
+
+
+ggsave(
+  "/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/Nbr_FCMs_08SEP2024.jpg",
+  FCM.plot,
+  width = 28,
+  height = 21,
+  units = "cm"
+)
+
+
+##Partial plot
+library(visreg)
+#Local density model
+
+# 1. Open jpeg file
+jpeg("/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/density_residual_plot_11July2025.jpg", width = 700, height = 500)
+# 2. Create the plot
+par(cex.lab = 1.8, cex.axis = 1.5, mar=c(5,6,4,1)+.1)
+visreg(neighbourhood.model,
+       "local.density",
+       type="conditional",
+       ylab=expression("FCM.Focal"),
+       points.par=list(col ="black",
+                       bg="#E69F00",
+                       cex = 1.0,
+                       cex.axis = 1.5,
+                       cex.lab = 2,
+                       pch = 21),
+       xlab="Local Conspecific Density (squirrels/ha)",
+       ylab="Individual [FCM] (ln ng/g)")
+# 3. Close the file
+dev.off()
+
+
+#Full model with neighbour FCM
+jpeg("/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/neighbour_residual_plot_11July2025.jpg", width = 600, height = 500)
+# 2. Create the plot
+par(cex.lab = 1.8, cex.axis = 1.5, mar=c(5,6,4,1)+.1)
+visreg(neighbourhood.model,
+       "Nbr_ng_g_ln",
+       type="conditional",
+       ylab=expression("FCM.Focal"),
+       points.par=list(col ="black",
+                       bg="#E69F00",
+                       cex=1.2, 
+                       pch = 21), 
+       xlab="Mean Neighbourhood [FCM] (ln ng/g)",
+       ylab="Individual [FCM] (ln ng/g)")
+# 3. Close the file
+dev.off()
+
+```
+
+
+###Reproductive Condition (rep_con)
+```{r}
+
+#re-order rep_con
+Squirrel_FCM$rep_con <- factor(Squirrel_FCM$rep_con, levels=c('pre-reproductive', 'pregnant', 'lactating', 'post-reproductive', 'abdominal', 'scrotal'))
+
+#This package has some nice colouring options (and I'm personally a fan of Wes Anderson films, so yeah)
+library(wesanderson)
+
+#Violin plot
+repro.violin <- ggplot(Squirrel_FCM, aes(x=rep_con, y=Focal.FCM)) +
+  geom_violin(aes(fill=sex)) +
+  geom_jitter(position=position_jitter(0.2),
+              alpha = 0.15) +
+  theme_classic() +
+  scale_fill_manual(values=wes_palette( name="Royal1"),
+                    labels=c("M" = "Male",
+                            "F" = "Female")) +
+  theme(legend.position= "top",
+        axis.text.x = element_text(size = 18),
+        axis.text.y = element_text(size = 18),
+        axis.title.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 20),
+        text = element_text(family = "Times New Roman")) +
+  xlab("Reproductive State") + 
+  ylab("Individual [FCM] (ln ng/g)") +
+  labs(fill = "Sex")
+repro.violin
+
+#Figure Save
+ggsave(
+  "/Users/alexanderhare/Desktop/Publications/2024 Social Neighbourhoods/Repro_Violin_08SEP2024.jpg",
+  repro.violin,
+  width = 34,
+  height = 19,
+  units = "cm"
+)
+
+
+#compare with tukey-HSD
+repro.tukey.lm<-aov(Focal.FCM~rep_con, data=Squirrel_FCM)
+anova(repro.tukey.lm)
+
+TukeyHSD(repro.tukey.lm, conf.level=.95)
+plot(TukeyHSD(repro.tukey.lm))
+
+
+
+#Numbers for figure
+##Sex
+###Females --> 80
+FCM_female<-subset(Squirrel_FCM, sex == "F")
+n_distinct(FCM_female$squirrel_id)
+
+###Males --> 49
+FCM_male<-subset(Squirrel_FCM, sex == "M")
+n_distinct(FCM_male$squirrel_id)
+
+##Reproductive state
+###pre-repro --> 88
+FCM_pre<-subset(Squirrel_FCM, rep_con == "pre-reproductive")
+
+###pregnant --> 162
+FCM_preg<-subset(Squirrel_FCM, rep_con == "pregnant")
+
+###lactating --> 289
+FCM_lac<-subset(Squirrel_FCM, rep_con == "lactating")
+
+###post-repro --> 15
+FCM_post<-subset(Squirrel_FCM, rep_con == "post-reproductive")
+
+###abdominal --> 9
+FCM_abd<-subset(Squirrel_FCM, rep_con == "abdominal")
+
+###scrotal --> 106
+FCM_scrot<-subset(Squirrel_FCM, rep_con == "scrotal")
+
+sum(88+162+289+15+9+106)
+
+```
+
+
+##Spatial Autocorrelation
+###Package Load
+```{r}
+library(sp)
+library(spdep)
+library(dbscan)
+library(viridis)
+library(colorspace)
+```
+
+
+###Residual Subsets
+```{r}
+KL_2008_res<-dplyr::filter(Squirrel_FCM, grid == "KL" & year == 2008)
+KL_2009_res<-dplyr::filter(Squirrel_FCM, grid == "KL" & year == 2009)
+KL_2010_res<-dplyr::filter(Squirrel_FCM, grid == "KL" & year == 2010)
+KL_2011_res<-dplyr::filter(Squirrel_FCM, grid == "KL" & year == 2011)
+
+
+SU_2008_res<-dplyr::filter(Squirrel_FCM, grid == "SU" & year == 2008)
+SU_2009_res<-dplyr::filter(Squirrel_FCM, grid == "SU" & year == 2009)
+SU_2010_res<-dplyr::filter(Squirrel_FCM, grid == "SU" & year == 2010)
+SU_2011_res<-dplyr::filter(Squirrel_FCM, grid == "SU" & year == 2011)
+```
+
+
+###KL
+####2008
+#####Residuals
+```{r}
+##Get average residual value per individual
+KL_2008_res_avg<-KL_2008_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+KL_2008_sp<-KL_2008_res_avg
+coordinates(KL_2008_sp)=c("Focal.locX","Focal.locY")
+plot(KL_2008_sp) #Just to make sure everything looks alright
+
+KL_coords_08 <- cbind(KL_2008_sp$Focal.locX, 
+                   KL_2008_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+KL_2008_dist <- dnearneigh(KL_coords_08, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = KL_2008_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+KL_2008_neighbourhood_plot<-plot(KL_2008_dist, 
+     coords = KL_coords_08, 
+     col = "red",
+     labels = rownames(KL_2008_sp))
+
+
+#Global Moran's I
+moran.test(KL_2008_sp$Focal_RESID_avg, nb2listw(KL_2008_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+##Moran's I = -0.003173993
+##Expectation = -0.024390244
+##Variance = 0.008573095
+##I standard deviate = 0.22914
+##Pseudo-P = 0.8188
+
+```
+
+
+
+####2009
+#####Residuals
+```{r}
+##Get average residual value per individual
+KL_2009_res_avg<-KL_2009_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+KL_2009_sp<-KL_2009_res_avg
+coordinates(KL_2009_sp)=c("Focal.locX","Focal.locY")
+plot(KL_2009_sp) #Just to make sure everything looks alright
+
+KL_coords_09 <- cbind(KL_2009_sp$Focal.locX, 
+                   KL_2009_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+KL_2009_dist <- dnearneigh(KL_coords_09, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = KL_2009_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+KL_2009_neighbourhood_plot<-plot(KL_2009_dist, 
+     coords = KL_coords_09, 
+     col = "red",
+     labels = rownames(KL_2009_sp))
+
+
+#Global Moran's I
+moran.test(KL_2009_sp$Focal_RESID_avg, nb2listw(KL_2009_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = 0.005430027
+##Expectation = -0.058823529
+##Variance = 0.014177164
+## Standard Deviate = 0.53964
+##Psuedo-P-value = 0.5894
+
+```
+
+
+
+####2010 
+#####Residuals
+```{r}
+##Get average residual value per individual
+KL_2010_res_avg<-KL_2010_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+KL_2010_sp<-KL_2010_res_avg
+coordinates(KL_2010_sp)=c("Focal.locX","Focal.locY")
+plot(KL_2010_sp) #Just to make sure everything looks alright
+
+KL_coords_10 <- cbind(KL_2010_sp$Focal.locX, 
+                   KL_2010_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+KL_2010_dist <- dnearneigh(KL_coords_10, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = KL_2010_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+KL_2010_neighbourhood_plot<-plot(KL_2010_dist, 
+     coords = KL_coords_10, 
+     col = "red",
+     labels = rownames(KL_2010_sp))
+
+
+#Global Moran's I
+moran.test(KL_2010_sp$Focal_RESID_avg, nb2listw(KL_2010_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = -0.19642201
+##Expectation = -0.03571429
+##Variance = 0.01852931
+## Standard Deviate = -1.1806
+##Psuedo-P-value = 0.2378
+```
+
+
+
+####2011
+#####Residuals
+```{r}
+##Get average residual value per individual
+KL_2011_res_avg<-KL_2011_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+KL_2011_sp<-KL_2011_res_avg
+coordinates(KL_2011_sp)=c("Focal.locX","Focal.locY")
+plot(KL_2011_sp) #Just to make sure everything looks alright
+
+KL_coords_11 <- cbind(KL_2011_sp$Focal.locX, 
+                   KL_2011_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+KL_2011_dist <- dnearneigh(KL_coords_11, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = KL_2011_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+KL_2011_neighbourhood_plot<-plot(KL_2011_dist, 
+     coords = KL_coords_11, 
+     col = "red",
+     labels = rownames(KL_2011_sp))
+
+
+#Global Moran's I
+moran.test(KL_2011_sp$Focal_RESID_avg, nb2listw(KL_2011_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = -0.09403741
+##Expectation = -0.05263158
+##Variance = 0.02247861
+## Standard Deviate = -0.27617
+##Psuedo-P-value = 0.7824
+```
+
+
+
+###SU
+####2008
+#####Residuals
+```{r}
+##Get average residual value per individual
+SU_2008_res_avg<-SU_2008_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+SU_2008_sp<-SU_2008_res_avg
+coordinates(SU_2008_sp)=c("Focal.locX","Focal.locY")
+plot(SU_2008_sp) #Just to make sure everything looks alright
+
+SU_coords_08 <- cbind(SU_2008_sp$Focal.locX, 
+                   SU_2008_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+SU_2008_dist <- dnearneigh(SU_coords_08, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = SU_2008_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+SU_2008_neighbourhood_plot<-plot(SU_2008_dist, 
+     coords = SU_coords_08, 
+     col = "red",
+     labels = rownames(SU_2008_sp))
+
+
+#Global Moran's I
+moran.test(SU_2008_sp$Focal_RESID_avg, nb2listw(SU_2008_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = -0.18637776
+##Expectation = -0.10000000
+##Variance = 0.08299635
+## Standard Deviate = -0.29983
+##Psuedo-P-value = 0.7643
+```
+
+
+
+
+####2009
+#####Residuals
+```{r}
+##Get average residual value per individual
+SU_2009_res_avg<-SU_2009_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+SU_2009_sp<-SU_2009_res_avg
+coordinates(SU_2009_sp)=c("Focal.locX","Focal.locY")
+plot(SU_2009_sp) #Just to make sure everything looks alright
+
+SU_coords_09 <- cbind(SU_2009_sp$Focal.locX, 
+                   SU_2009_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+SU_2009_dist <- dnearneigh(SU_coords_09, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = SU_2009_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+SU_2009_neighbourhood_plot<-plot(SU_2009_dist, 
+     coords = SU_coords_09, 
+     col = "red",
+     labels = rownames(SU_2009_sp))
+
+
+#Global Moran's I
+moran.test(SU_2009_sp$Focal_RESID_avg, nb2listw(SU_2009_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = -0.2340268
+##Expectation = -0.1111111
+##Variance = 0.1559105
+## Standard Deviate = -0.31129
+##Psuedo-P-value = 0.7556
+```
+
+
+
+####2010
+#####Residuals
+```{r}
+##Get average residual value per individual
+SU_2010_res_avg<-SU_2010_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+SU_2010_sp<-SU_2010_res_avg
+coordinates(SU_2010_sp)=c("Focal.locX","Focal.locY")
+plot(SU_2010_sp) #Just to make sure everything looks alright
+
+SU_coords_10 <- cbind(SU_2010_sp$Focal.locX, 
+                   SU_2010_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+SU_2010_dist <- dnearneigh(SU_coords_10, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = SU_2010_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+SU_2010_neighbourhood_plot<-plot(SU_2010_dist, 
+     coords = SU_coords_10, 
+     col = "red",
+     labels = rownames(SU_2010_sp))
+
+
+#Global Moran's I
+moran.test(SU_2010_sp$Focal_RESID_avg, nb2listw(SU_2010_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = -0.51558667
+##Expectation = -0.07142857
+##Variance = 0.05904344
+## Standard Deviate = -1.8279
+##Psuedo-P-value = 0.06756
+
+```
+
+
+
+
+####2011
+#####Residuals
+```{r}
+##Get average residual value per individual
+SU_2011_res_avg<-SU_2011_res %>%
+  group_by(squirrel_id) %>%
+  dplyr::mutate(Focal_RESID_avg = mean(RESID, na.rm=TRUE)) %>%
+  ungroup() %>%
+  distinct(squirrel_id, .keep_all= TRUE)
+
+##Converting to spatial coordinates
+SU_2011_sp<-SU_2011_res_avg
+coordinates(SU_2011_sp)=c("Focal.locX","Focal.locY")
+plot(SU_2011_sp) #Just to make sure everything looks alright
+
+SU_coords_11 <- cbind(SU_2011_sp$Focal.locX, 
+                   SU_2011_sp$Focal.locY)
+
+##Calculate distance neighbour connectivity, at a scale of 150m (acoustic range plus individual movement from midden center)
+SU_2011_dist <- dnearneigh(SU_coords_11, 
+                           d1=0, 
+                           d2 = 5,
+                           row.names = SU_2011_sp$squirrel_id,
+                           use_kd_tree=TRUE)
+
+##Take a look at what the acoustic neighbourhood looks like
+SU_2011_neighbourhood_plot<-plot(SU_2011_dist, 
+     coords = SU_coords_11, 
+     col = "red",
+     labels = rownames(SU_2011_sp))
+
+
+#Global Moran's I
+moran.test(SU_2011_sp$Focal_RESID_avg, nb2listw(SU_2011_dist, style ="W", zero.policy = TRUE), randomisation=TRUE, zero.policy=TRUE, , alternative="two.sided")
+
+
+#Global Moran's I
+##Moran's I = 0.24731922
+##Expectation = -0.04761905
+##Variance = 0.01652317
+## Standard Deviate = 2.2945
+##Psuedo-P-value = 0.02176
+```
+
+
+
+
+#Remove SU2011 --> test that spatial autocorrelation didn't impact initial findings
+```{r}
+library(dplyr)
+
+Squirrel_noSU<-Squirrel_FCM %>%
+  filter(!(grid == "SU" & year == "2011"))
+n_distinct(Squirrel_FCM$squirrel_id)
+n_distinct(Squirrel_noSU$squirrel_id)
+
+#Build model -> initial model with interaction was non-significant, so removed from analysis
+neighbourhood.model.noSU<-lmerTest::lmer(Focal.FCM ~scale(Nbr_ng_g_ln)
+                                    + scale(local.density)
+                                    + rep_con
+                                    + (1|year:squirrel_id),
+                                    data=Squirrel_noSU)
+summary(neighbourhood.model.noSU) #Nbr FCMs estimate = 0.13424 (quite a bit higher than local density in the stripped down model)
+anova(neighbourhood.model.noSU)
+
+#Getting the same findings. Looks like that wasn't significantly biasing our results
+
+```
+
+
+
+
